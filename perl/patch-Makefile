@@ -1,0 +1,17 @@
+--- ./Makefile.orig	2014-06-21 10:27:18.000000000 +0200
++++ ./Makefile	2014-06-21 10:41:45.000000000 +0200
+@@ -22,9 +22,9 @@
+ 	[ -e "${DESTDIR}${ETCDIR}/ssl-admin" ] || mkdir -p ${DESTDIR}${ETCDIR}/ssl-admin
+ 	sed s+~~~ETCDIR~~~+${ETCDIR}+g man1/ssl-admin.1 > ${DESTDIR}${MANDIR}/man1/ssl-admin.1
+ 	sed s+~~~ETCDIR~~~+${ETCDIR}+g man5/ssl-admin.conf.5 > ${DESTDIR}${MANDIR}/man5/ssl-admin.conf.5
+-	install -c -g wheel -o root -m 0660 -S -v ssl-admin.conf ${DESTDIR}${ETCDIR}/ssl-admin/ssl-admin.conf.sample
+-	install -c -g wheel -o root -m 0660 -S -v openssl.conf ${DESTDIR}${ETCDIR}/ssl-admin/openssl.conf.sample
+-	[ -e "${DESTDIR}${ETCDIR}/ssl-admin/openssl.conf" ] || cp ${DESTDIR}${ETCDIR}/ssl-admin/openssl.conf.sample ${DESTDIR}${ETCDIR}/ssl-admin/openssl.conf
++	install -c -m 0660 -S -v ssl-admin.conf ${DESTDIR}${ETCDIR}/ssl-admin/ssl-admin.conf.sample
++	install -c -m 0660 -S -v openssl.conf ${DESTDIR}${ETCDIR}/ssl-admin/openssl.conf.sample
++#	[ -e "${DESTDIR}${ETCDIR}/ssl-admin/openssl.conf" ] || cp ${DESTDIR}${ETCDIR}/ssl-admin/openssl.conf.sample ${DESTDIR}${ETCDIR}/ssl-admin/openssl.conf
+ 	sed -e "s+~~~ETCDIR~~~+${ETCDIR}+g" -e "s+~~~BUILD~~~+prod+g" ssl-admin > ssl-admin.mod
+-	install -c -g wheel -o root -m 0755 -S -v ssl-admin.mod ${DESTDIR}${BINDIR}/ssl-admin
+-	chmod 0444 ${DESTDIR}${ETCDIR}/ssl-admin/*.conf.sample
++	install -c -m 0755 -S -v ssl-admin.mod ${DESTDIR}${BINDIR}/ssl-admin
++#	chmod 0444 ${DESTDIR}${ETCDIR}/ssl-admin/*.conf.sample

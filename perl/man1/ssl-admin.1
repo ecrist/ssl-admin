@@ -1,0 +1,142 @@
+.TH ssl\-admin 1
+.SH NAME
+ssl-admin \- OpenSSL Certificate Manager
+.SH SYNOPSIS
+.T
+.B ssl-admin
+
+.SH DESCRIPTION
+\fBssl-admin\fR is a menu-driven tool designed to simplify the management 
+and distriibution of SSL certificates.  ssl-admin was originally written to
+manage SSL certificates for use with OpenVPN.  This functionality has not
+been removed.
+
+.SH CORE FUNCTIONS
+There are a number of core operations within \fBssl-admin\fR, often times
+mutually exlusive of one another.  For example, you cannot generate a new
+CA certificate and generate a client certificate all at once.
+
+.TP
+\fB--new-ca\fR
+This command will generate a new root certificate and key pair and store
+the new files in \fBwork-dir\fR.  If you add the optional \fB--clean\fR
+argument, you will wipe out the existing certificate store.
+
+.TP
+\fB--int-ca\fR
+This command will generate an intermediate CA certficate which can be used
+for signing sub keys, etc.
+
+.TP
+\fB--client-cert\fR, \fB--ccert\fR
+This will generate a client signing request, certificate, and key.
+
+.TP
+\fB--server-cert\fR, \fB--scert\fR
+This will generate a client signing request, certificate, and key, with 
+server extensions enabled.
+
+.TP
+\fB--dh\fR, \fB--diffie-hellman\fR
+Generates the Diffie-Hellman prime.
+
+.TP
+\fB--revoke\fR
+Used to revoke a certificate in the store.
+
+.TP
+\fB--crl-list\fR
+This outputs a list of revoked certificates.
+
+.SH DIRECTORIES
+There are a number of directories within ~~~ETCDIR~~~/ssl-admin/ which
+contain the working and datafiles.  
+.TP 
+ACTIVE (~~~ETCDIR~~~/ssl-admin/active)
+The active directory contains certificates that have not been revoked. The 
+only keys that are \fBREQUIRED\fR to be present are ca.crt and ca.key.
+
+.TP 
+CSR (~~~ETCDIR~~~/ssl-admin/csr)
+The csr directory contains certificate signing requests and keys for those
+keys which have been created using ssl-admin.  If you need to sign a 
+certificate signing request generated elsewhere, place the .csr here. The
+key files are not required to be present.
+
+.TP 
+PACKAGES (~~~ETCDIR~~~/ssl-admin/packages)
+The packages directory contains any zipped packages you've built with ssl-admin.
+Packages are generally used to distribute signed certificates to end users.
+
+.TP 
+PROG (~~~ETCDIR~~~/ssl-admin/prog)
+The prog directory contains all the data files used by ssl-admin.
+\fBDO NOT EDIT OR MODIFY THE FILES IN THIS DIRECTORY\fR unless you know exactly
+what you are doing.  If you are running OpenVPN, you may point your OpenVPN
+crl-verify config option to ~~~ETCDIR~~~/ssl-admin/prog/crl.pem.
+
+.TP 
+REVOKED (~~~ETCDIR~~~/ssl-admin/revoked)
+The revoked directory contains certificates and keys for those certificates
+that have been revoked within ssl-admin.
+
+.SH MENU OPTIONS
+.TP
+UPDATE RUN-TIME OPTIONS
+.TP
+CREATE NEW CERTIFICATE REQUEST
+
+.TP
+SIGN A CERTIFICATE REQUEST
+
+.TP
+PERFORM A ONE-STEP REQUEST/SIGN
+
+.TP
+REVOKE A CERTIFICATE
+
+.TP
+RENEW/RE-SIGN A PAST CERTIFICATE REQUEST
+
+.TP
+VIEW CURRENT CRL
+
+.TP
+VIEW INDEX INFORMATION
+
+.TP
+ZIP/PACKAGE END-USER FILES
+
+.TP
+GENERATE DIFFIE-HELLMAN
+
+.TP
+CREATE SELF-SIGNED CA
+
+.TP
+CREATE SIGNED SERVER CERTIFICATE
+
+.TP
+QUIT SSL-ADMIN
+
+.SH NOTES
+This man page needs to be completed.
+
+.SH BUGS
+.TP
+OpenVPN client.ovpn error
+There is an error when making a new certificate that client.ovpn doesn't exist.
+
+.SH FILES
+.T4
+~~~ETCDIR~~~/ssl-admin/ssl-admin.conf
+
+.SH "SEE ALSO"
+ssl-admin.conf(5), openssl(1)
+
+.SH AUTHOR
+Eric Crist <ecrist@secure-computing.net>
+
+v~~~VERSION~~~
+$Id: ssl-admin.1 356 2014-06-25 02:59:57Z ecrist $
+

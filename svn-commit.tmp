@@ -1,0 +1,7 @@
+* fix build script
+* fix overly greedy globbing on revokation
+* use File::Copy instead of unpathed system commands
+--This line, and those below, will be ignored--
+
+M    perl/build.freebsd.sh
+M    perl/ssl-admin

@@ -1,0 +1,46 @@
+#!/bin/sh
+#
+# $Id: configure 353 2014-06-24 19:19:58Z ecrist $
+
+VARSED=`which sed`
+
+OS=`uname`
+case "$OS" in
+        FreeBSD)
+        ${VARSED} -i "" "s+VARETC+/usr/local/etc+g" Makefile
+        ${VARSED} -i "" "s+VARBIN+/usr/local/bin+g" Makefile
+        ${VARSED} -i "" "s+VARMAN+/usr/local/man+g" Makefile
+        ${VARSED} -i "" "s+VARSED+${VARSED}+g" Makefile
+        ;;
+        NetBSD)
+        ${VARSED} -i "" "s+VARETC+/usr/local/etc+g" Makefile
+        ${VARSED} -i "" "s+VARBIN+/usr/local/bin+g" Makefile
+        ${VARSED} -i "" "s+VARMAN+/usr/share/man+g" Makefile
+        ${VARSED} -i "" "s+VARSED+${VARSED}+g" Makefile
+        ;;
+        OpenBSD)
+        ${VARSED} -i "" "s+VARETC+/etc+g" Makefile
+        ${VARSED} -i "" "s+VARBIN+/usr/local/bin+g" Makefile
+        ${VARSED} -i "" "s+VARMAN+/usr/local/man+g" Makefile
+        ${VARSED} -i "" "s+VARSED+${VARSED}+g" Makefile
+        ;;
+        Darwin)
+        ${VARSED} -i "" "s+VARETC+/Library+g" Makefile
+        ${VARSED} -i "" "s+VARBIN+/usr/local/bin+g" Makefile
+        ${VARSED} -i "" "s+VARMAN+/usr/share/man+g" Makefile
+        ${VARSED} -i "" "s+VARSED+${VARSED}+g" Makefile
+        ;;
+        Linux)
+        ${VARSED} -i "s+VARETC+/etc+g" Makefile
+        ${VARSED} -i "s+VARBIN+/usr/bin+g" Makefile
+        ${VARSED} -i "s+VARMAN+/usr/share/man+g" Makefile
+        ${VARSED} -i "s+VARSED+${VARSED}+g" Makefile
+        ${VARSED} -i "s+wheel+root+" Makefile
+		;;
+        *)
+        echo "Your OS is not OS X (Darwin), BSD, or Linux."
+        echo "I don't know how to install on ${OS}."
+        echo "Please submit a bug report if you think I should."
+        ;;
+esac
+
