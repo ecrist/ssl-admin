@@ -27,8 +27,7 @@
 # NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
-# VERSION: ~~~VERSION~~~
-# $Id: ssl-admin 367 2014-10-21 15:54:27Z ecrist $
+# VERSION: 1.2.1
 
 use strict;
 use warnings;
@@ -259,7 +258,7 @@ sub gen_dh {
 sub main_menu {
 	update_serial();
 	print "\n\n=====================================================\n";
-	print '#               SSL-ADMIN v~~~VERSION~~~                    #';
+	print '#               SSL-ADMIN v1.2.1                    #';
 	print "\n=====================================================\n";
 	print "Please enter the menu option from the following list:\n";
 	print "1) Update run-time options:\n";
@@ -279,6 +278,7 @@ sub main_menu {
 	print "dh) Generate Diffie Hellman parameters.\n";
 	print "CA) Create new Self-Signed CA certificate.\n";
 	print "S) Create new Signed Server certificate.\n";
+	print "C) Generate new Certificate Revokation List (CRL)\n";
 	print "q) Quit $program_name\n\n";
 	print "Menu Item: ";
 	chomp($menu_item = <>);
@@ -500,6 +500,23 @@ sub menu_handler {
 		common_name();
 		create_server();
 		sign_server();
+### GENERATE CRL MENU
+
+	} elsif ($menu_item eq "C"){
+		my $yn = "";
+		print "=========> Generating new CRL\n";
+		do {
+			print "We're going to generate a new Certificate Revocation List.  Are you sure? (y/n): ";
+			chomp($yn = <>);
+		} until $yn =~ m/^[yn]$/;
+		if ($yn eq "n"){ main_menu(); }
+		print "=========> Generating new Certificate Revokation List $crl\n";
+		`cd $working_dir/active && openssl ca -gencrl -out $crl -config $key_config`;
+		print "=========> Verifying Revokation: ";
+		print "DONE\n";
+		print "=========> CSR for all users is in $working_dir/csr\n";
+		sleep 3;
+
 	} elsif ($menu_item eq "q"){
 		exit 0;
 	}
