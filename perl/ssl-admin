@@ -140,9 +140,9 @@ sub create_csr {
 		chomp($yn = <>);
 	} until $yn =~ m/^[yn]$/;
 	if ($yn eq "y") {
-		system("cd $working_dir && openssl req_v3 -new -keyout $cn.key -out $cn.csr -config $key_config -batch -extensions v3_req");
+		system("cd $working_dir && openssl req -new -keyout $cn.key -out $cn.csr -config $key_config -batch -extensions v3_req");
 	} elsif ($yn eq "n") {
-		system("cd $working_dir && openssl req_v3 -nodes -new -keyout $cn.key -out $cn.csr -config $key_config -batch -extensions v3_req");
+		system("cd $working_dir && openssl req -nodes -new -keyout $cn.key -out $cn.csr -config $key_config -batch -extensions v3_req");
 	}
 }
 
