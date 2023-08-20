@@ -1,5 +1,7 @@
 #!/bin/sh
-# $Id$
+#
+# This script prepares a package file (both tgz and xz) which can
+# be used to build OS-specific packages.
 
 MAJVER=1
 MINVER=3
@@ -12,15 +14,15 @@ DIR=ssl-admin-$MAJVER.$MINVER.$REVISION
 if [ -d $DIR ]; then
 	rm -rf $DIR
 fi
-mkdir $DIR
-
-echo "Updating version string"
-sed -i -e "s/~~~VERSION~~~/$MAJVER.$MINVER.$REVISION/" ssl-admin
+mkdir "$DIR"
 
 ## Copy file over.
-cp -r man1 man5 Makefile configure openssl.conf ssl-admin ssl-admin.conf $DIR
+cp -r man1 man5 Makefile configure openssl.conf ssl-admin ssl-admin.conf "$DIR"
 
-## remove .svn dir, if it exists.
+echo "Updating version string"
+sed -i -e "s/~~~VERSION~~~/$MAJVER.$MINVER.$REVISION/" "$DIR/ssl-admin"
+
+## remove .svn and .git dirs, if they exist.
 find $DIR -type d -name .svn | xargs rm -rf  
 find $DIR -type d -name .git | xargs rm -rf  
 

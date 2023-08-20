@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 #
-# Copyright (c) 2007, Eric F Crist
+# Copyright (c) 2007-2023 Eric F Crist
 #
 # All rights reserved.
 #
@@ -27,7 +27,7 @@
 # NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
-# VERSION: 1.2.1
+# VERSION: ~~~VERSION~~~
 
 use strict;
 use warnings;
@@ -258,7 +258,7 @@ sub gen_dh {
 sub main_menu {
 	update_serial();
 	print "\n\n=====================================================\n";
-	print '#               SSL-ADMIN v1.2.1                    #';
+	print '#               SSL-ADMIN v~~~VERSION~~~                    #';
 	print "\n=====================================================\n";
 	print "Please enter the menu option from the following list:\n";
 	print "1) Update run-time options:\n";
@@ -624,6 +624,15 @@ if (! -e $crl){
 	print "===> Creating initial CRL.";
 	system("cd $working_dir/active && openssl ca -gencrl -batch -config $key_config -out $crl");
 }
+
+if ($#ARGV >= 0){
+	if ($ARGV[0] eq "crl"){
+		# generate a CRL and exit
+		`cd $working_dir/active && openssl ca -gencrl -out $crl -config $key_config 2>&1 > /dev/null`;
+		exit 0;
+	}
+}
+
 my $install_date = `cat $working_dir/prog/install`;
 print "ssl-admin installed $install_date";
 update_serial();
@@ -634,13 +643,6 @@ if ( ! -e "$working_dir/packages/client.ovpn"){
 	print "OPTIONAL: I can't find your OpenVPN client config.  Please copy your config to\n$working_dir/packages/client.ovpn";
 }
 
-if ($#ARGV >= 0){
-	if ($ARGV[0] == "crl"){
-		# generate a CRL and exit
-		`cd $working_dir/active && openssl ca -gencrl -out $crl -config $key_config`;
-		exit 0;
-	}
-}
 while ($menu_item ne "q"){
 	main_menu();
 }
