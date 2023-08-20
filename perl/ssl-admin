@@ -527,7 +527,6 @@ if ( ! -e "$working_dir"){
 	print "$working_dir doesn't exist.  Is the variable set correctly?\n";
 	exit 1;
 }
-print "This program will walk you through requesting, signing,\norganizing and revoking SSL certificates.\n\n";
 if ($> != 0){
 	if ($build eq "devel"){
 		print "\n\nRunning devel build - this isn't secure!\n\n";
@@ -540,6 +539,7 @@ if ( ! -e "$working_dir/prog/install"){
 
 	if ( ! -e "$working_dir/active"){
 		my $yn;
+		print "This program will walk you through requesting, signing,\norganizing and revoking SSL certificates.\n\n";
 		print "Looks like this is a new install, installing...\n";
 		do {
 			print "You will first need to edit the ~~~ETCDIR~~~/ssl-admin/ssl-admin.conf\n";
@@ -632,6 +632,14 @@ update_serial();
 system("cp $working_dir/active/ca.crt $working_dir/packages/");
 if ( ! -e "$working_dir/packages/client.ovpn"){
 	print "OPTIONAL: I can't find your OpenVPN client config.  Please copy your config to\n$working_dir/packages/client.ovpn";
+}
+
+if ($#ARGV >= 0){
+	if ($ARGV[0] == "crl"){
+		# generate a CRL and exit
+		`cd $working_dir/active && openssl ca -gencrl -out $crl -config $key_config`;
+		exit 0;
+	}
 }
 while ($menu_item ne "q"){
 	main_menu();
