@@ -1,0 +1,612 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2007-2023 Eric F Crist
+#
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or
+# without modification, are permitted provided that the following
+# conditions are met:
+#
+# Redistributions of source code must retain the above copyright
+# notice, this list of conditions and the following disclaimer.
+#
+# Redistributions in binary form must reproduce the above copyright
+# notice, this list of conditions and the following disclaimer in
+# the documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+# PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+# LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+# NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# VERSION: ~~~VERSION~~~
+
+import os
+import re
+import sys
+import time
+import shutil
+import subprocess
+import datetime
+from pathlib import Path
+
+VERSION = "~~~VERSION~~~"
+BUILD = "~~~BUILD~~~"
+PROGRAM_NAME = "ssl-admin"
+CONFIG_FILE = Path("~~~ETCDIR~~~/ssl-admin/ssl-admin.conf")
+
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+def load_config(path: Path) -> dict:
+    config = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            m = re.match(r'^([\w]+)\s*=\s*"?([^"#]*)"?\s*(?:#.*)?$', line)
+            if m:
+                config[m.group(1)] = m.group(2).strip()
+    return config
+
+
+# ---------------------------------------------------------------------------
+# Runtime state
+# ---------------------------------------------------------------------------
+
+working_dir: Path = Path()
+key_config: Path = Path()
+crl: Path = Path()
+cn: str = ""
+cn_literal: str = ""
+key_days: str = ""
+key_size: str = ""
+intermediate: str = "NO"
+new_runtime: int = 0
+menu_item: str = ""
+curr_serial: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def run(cmd: str) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, shell=True, text=True)
+
+
+def run_out(cmd: str) -> str:
+    return subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout.strip()
+
+
+def yn_prompt(prompt: str) -> str:
+    while True:
+        answer = input(prompt).strip().lower()
+        if answer in ('y', 'n'):
+            return answer
+
+
+def update_serial():
+    global curr_serial
+    curr_serial = (working_dir / "prog" / "serial").read_text().strip()
+
+
+# ---------------------------------------------------------------------------
+# Core operations
+# ---------------------------------------------------------------------------
+
+def common_name():
+    global cn, cn_literal
+    cn_regex = re.compile(r'^[\w\s\-\.]+$')
+    while True:
+        print("Please enter certificate owner's name or ID.")
+        print("Usual format is first initial-last name (jdoe) or")
+        print("hostname of server which will use this certificate.")
+        print("All lower case, numbers OK.")
+        cn_new = input(f"Owner [{cn}]: ").strip()
+        if cn_regex.match(cn_new) or cn_regex.match(cn):
+            break
+    if cn_new and cn_new != cn:
+        cn_literal = cn_new
+        cn = cn_literal.replace(' ', '_')
+        print(f"\n\nFile names will use {cn}.\n")
+    os.environ['KEY_CN'] = cn_literal
+
+
+def project_info():
+    global key_days, key_size, intermediate
+    if new_runtime != 1:
+        return
+
+    key_days_new = input(f"Number of days key is valid for [{key_days}]: ").strip()
+    if key_days_new and key_days_new != os.environ.get('KEY_DAYS', ''):
+        os.environ['KEY_DAYS'] = key_days_new
+        key_days = key_days_new
+
+    while True:
+        ks = input(f"Key size in bits (up to 4096) [{key_size}]: ").strip()
+        if ks == '' or (ks.isdigit() and int(ks) <= 4096):
+            if ks:
+                key_size = ks
+            break
+
+    print("######################################################")
+    print("####################  CAUTION!!!  ####################")
+    print("######################################################")
+
+    yn = yn_prompt("\nTurn on Intermediate CA certificate signing? (y/n): ")
+    if yn == 'y':
+        intermediate = "YES"
+        print("\nYou have enabled intermediate certificate signing! This means")
+        print("any certificates you sign this session will be authorized to sign")
+        print("new certificates which will be trusted by you and anyone who")
+        print("trusts you.  This option is generally not going to be used.")
+    else:
+        intermediate = "NO"
+        print("Intermediate CA certificate signing is disabled.")
+
+
+def create_csr():
+    common_name()
+    if (working_dir / "active" / f"{cn}.crt").exists():
+        print(f"{cn} already has a key. Creating another one will overwrite the existing key.")
+        if yn_prompt(f"{cn} already has an active key.  Do you want to overwrite? (y/n): ") == 'n':
+            common_name()
+
+    nodes = "" if yn_prompt("Would you like to password protect the private key (y/n): ") == 'y' else "-nodes "
+    run(f"cd {working_dir} && openssl req {nodes}-new -keyout {cn}.key -out {cn}.csr "
+        f"-config {key_config} -batch -extensions v3_req")
+
+
+def sign_csr():
+    update_serial()
+    print(f"===> Serial Number = {curr_serial}")
+
+    if intermediate == "NO":
+        print(f"=========> Signing request for {cn}")
+        result = run(f"cd {working_dir} && openssl ca -config {key_config} -days {key_days} "
+                     f"-out {cn}.crt -in {cn}.csr -batch -extensions v3_req")
+    else:
+        print(f"=========> Signing new Intermediate CA request for {cn}")
+        result = run(f"cd {working_dir} && openssl ca -config {key_config} "
+                     f"-policy policy_new_ca -out {cn}.crt -extensions v3_ca "
+                     f"-infiles {cn}.csr -batch")
+
+    if result.returncode != 0:
+        sys.exit("There was an error during openssl execution.  Please look for error messages above.")
+
+    print(f"=========> Moving certificates and keys to {working_dir}/active for production.")
+    shutil.move(str(working_dir / f"{cn}.crt"), str(working_dir / "active"))
+    shutil.copy2(str(working_dir / f"{cn}.key"), str(working_dir / "csr"))
+    shutil.move(str(working_dir / f"{cn}.key"), str(working_dir / "active"))
+    shutil.move(str(working_dir / "active" / f"{curr_serial}.pem"),
+                str(working_dir / "active" / f"{cn}.pem"))
+
+    yn = 'y' if menu_item == '4' else yn_prompt(
+        f"Can I move signing request ({cn}.csr) to the csr directory for archiving? (y/n): ")
+    if yn == 'y':
+        shutil.move(str(working_dir / f"{cn}.csr"), str(working_dir / "csr"))
+        print(f"===> {cn}.csr moved.")
+    else:
+        print(f"You will need to move {working_dir}/{cn}.csr to {working_dir}/csr/{cn}.csr manually!")
+
+
+def new_ca():
+    common_name()
+    print(f"\n\n===> Creating private key with {key_size} bits and generating request.")
+
+    des3 = "-des3 " if yn_prompt("Do you want to password protect your CA private key? (y/n): ") == 'y' else ""
+    run(f"cd {working_dir} && openssl genrsa {des3}-out {cn}.key {key_size}")
+
+    print("===> Self-Signing request.")
+    result = run(f"openssl req -new -x509 -extensions v3_ca "
+                 f"-key {working_dir}/{cn}.key -out {working_dir}/{cn}.crt "
+                 f"-days {key_days} -config {key_config} -batch")
+    if result.returncode != 0:
+        sys.exit("OpenSSL exited with errors.  Please read above and address the problems indicated.")
+
+    print("===> Moving certificate and key to appropriate directory.")
+    shutil.move(str(working_dir / f"{cn}.key"), str(working_dir / "active" / "ca.key"))
+    shutil.move(str(working_dir / f"{cn}.crt"), str(working_dir / "active" / "ca.crt"))
+
+
+def create_server():
+    common_name()
+    if (working_dir / "active" / f"{cn}.crt").exists():
+        print(f"{cn} already has a key.  Creating another one will overwrite the existing key.")
+        if yn_prompt(f"{cn} already has an active key.  Do you want to overwrite? (y/n): ") == 'n':
+            project_info()
+
+    nodes = "" if yn_prompt("Would you like to password protect the private key (y/n): ") == 'y' else "-nodes "
+    run(f"cd {working_dir} && openssl req -extensions server {nodes}-new "
+        f"-keyout {cn}.key -out {cn}.csr -config {key_config} -batch")
+
+
+def sign_server():
+    update_serial()
+    print(f"===> Serial Number = {curr_serial}")
+    result = run(f"cd {working_dir} && openssl ca -config {key_config} -extensions server "
+                 f"-days {key_days} -out {cn}.crt -in {cn}.csr -batch")
+    if result.returncode != 0:
+        sys.exit("There was an error during openssl execution.  Please look for error messages above.")
+
+    print(f"=========> Moving certificates and keys to {working_dir}/active for production.")
+    shutil.move(str(working_dir / f"{cn}.crt"), str(working_dir / "active"))
+    shutil.copy2(str(working_dir / f"{cn}.key"), str(working_dir / "csr"))
+    shutil.move(str(working_dir / f"{cn}.key"), str(working_dir / "active"))
+    shutil.move(str(working_dir / "active" / f"{curr_serial}.pem"),
+                str(working_dir / "active" / f"{cn}.pem"))
+
+    if yn_prompt(f"Can I move signing request ({cn}.csr) to the csr directory for archiving? (y/n): ") == 'y':
+        shutil.move(str(working_dir / f"{cn}.csr"), str(working_dir / "csr"))
+        print(f"===> {cn}.csr moved.")
+    else:
+        print(f"You will need to move {working_dir}/{cn}.csr to {working_dir}/csr/{cn}.csr manually!")
+        print("Remember that if you do not keep your server .csr you will need to build a new CA")
+        print("if your server cert gets compromised.")
+
+
+def gen_dh():
+    run(f"openssl dhparam -out {working_dir}/dh{key_size}.pem {key_size}")
+    print("Your Diffie Hellman parameters have been created.")
+
+
+# ---------------------------------------------------------------------------
+# Menu
+# ---------------------------------------------------------------------------
+
+def main_menu():
+    global menu_item
+    update_serial()
+    print(f"\n\n=====================================================")
+    print(f"#               SSL-ADMIN v{VERSION}                    #")
+    print(f"=====================================================")
+    print("Please enter the menu option from the following list:")
+    print(f"1) Update run-time options:")
+    print(f"     Key Duration (days): {key_days}")
+    print(f"     Current Serial #: {curr_serial}")
+    print(f"     Key Size (bits): {key_size}")
+    print(f"     Intermediate CA Signing: {intermediate}")
+    print("2) Create new Certificate Request")
+    print("3) Sign a Certificate Request")
+    print("4) Perform a one-step request/sign")
+    print("5) Revoke a Certificate")
+    print("6) Renew/Re-sign a past Certificate Request")
+    print("7) View current Certificate Revocation List")
+    print("8) View index information for certificate.")
+    print("i) Generate a user config with in-line certificates and keys.")
+    print("z) Zip files for end user.")
+    print("dh) Generate Diffie Hellman parameters.")
+    print("CA) Create new Self-Signed CA certificate.")
+    print("S) Create new Signed Server certificate.")
+    print("C) Generate new Certificate Revocation List (CRL)")
+    print(f"q) Quit {PROGRAM_NAME}\n")
+    menu_item = input("Menu Item: ").strip()
+    menu_handler()
+
+
+def menu_handler():
+    global new_runtime
+
+    if menu_item == '1':
+        new_runtime = 1
+        project_info()
+        print("Run-time options reconfigured.\n\n")
+        new_runtime = 0
+        main_menu()
+
+    elif menu_item == '2':
+        create_csr()
+
+    elif menu_item == '3':
+        common_name()
+        sign_csr()
+
+    elif menu_item == '4':
+        create_csr()
+        sign_csr()
+
+    elif menu_item == '5':
+        common_name()
+        print(f"=========> Revoking Certificate for {cn}")
+        if yn_prompt("We're going to REVOKE an SSL certificate.  Are you sure? (y/n): ") == 'n':
+            main_menu()
+            return
+
+        revoke_out = run_out(
+            f"openssl x509 -noout -text -in {working_dir}/active/{cn}.crt | grep Serial")
+        m = re.search(r'Serial Number:\s*([A-Fa-f0-9]+)', revoke_out)
+        if not m:
+            print("WARNING: Certificate doesn't seem valid.")
+            revoke = None
+        else:
+            revoke = m.group(1)
+        print(f"\n $revoke = {revoke}")
+
+        run(f"cd {working_dir}/active && openssl ca -revoke {working_dir}/active/{cn}.crt "
+            f"-config {key_config} -batch")
+        print(f"=========> Generating new Certificate Revocation List {crl}")
+        run(f"cd {working_dir}/active && openssl ca -gencrl -out {crl} -config {key_config}")
+
+        print("=========> Verifying Revocation: ", end="", flush=True)
+        check_out = run_out(f"openssl crl -noout -text -in {crl} | grep Serial")
+        check_status = False
+        if revoke:
+            for hit in re.finditer(r'Serial Number:\s*([A-Fa-f0-9]+)', check_out):
+                if int(revoke, 16) == int(hit.group(1), 16):
+                    check_status = True
+        print("SUCCESS!" if check_status else "ERRORS")
+
+        print(f"=========> Moving {cn}'s files to {working_dir}/revoked")
+        for ext in ('csr', 'pem', 'crt', 'key'):
+            src = working_dir / "active" / f"{cn}.{ext}"
+            if src.exists():
+                shutil.move(str(src), str(working_dir / "revoked" / f"{cn}.{ext}"))
+
+        print(f"=========> Destroying previous packages built for {cn}: ", end="", flush=True)
+        for pkg in (working_dir / "packages" / f"{cn}.ovpn",
+                    working_dir / "packages" / f"{cn}.zip"):
+            pkg.unlink(missing_ok=True)
+        print("DONE")
+
+        print(f"=========> CSR for all users is in {working_dir}/csr")
+        print(f"===============> Changing file name for {cn}'s request to *.revoked")
+        csr_path = working_dir / "csr" / f"{cn}.csr"
+        if csr_path.exists():
+            shutil.move(str(csr_path), str(csr_path.parent / f"{cn}.csr.revoked"))
+        time.sleep(3)
+
+    elif menu_item == '6':
+        common_name()
+        csr_path = working_dir / "csr" / f"{cn}.csr"
+        csr_revoked = working_dir / "csr" / f"{cn}.csr.revoked"
+        key_path = working_dir / "csr" / f"{cn}.key"
+
+        if csr_path.exists():
+            print("======> Moving archived request to working directory.")
+            shutil.move(str(csr_path), str(working_dir))
+            if key_path.exists():
+                shutil.move(str(key_path), str(working_dir))
+            sign_csr()
+        elif csr_revoked.exists():
+            print(f"\n\nThe certificate you're trying to renew has been revoked!")
+            if yn_prompt("Are you sure you want to re-sign/renew this certificate? (y/n): ") == 'n':
+                main_menu()
+                return
+            shutil.move(str(csr_revoked), str(working_dir / f"{cn}.csr"))
+            if key_path.exists():
+                shutil.move(str(key_path), str(working_dir / f"{cn}.key"))
+            sign_csr()
+        else:
+            print(f"There is no request in the archive for {cn}.")
+        time.sleep(2)
+
+    elif menu_item == '7':
+        if not crl.exists():
+            run(f"cd {working_dir}/active && openssl ca -gencrl -config {key_config} -out {crl} -batch")
+        run(f"openssl crl -text -noout -in {crl}")
+        time.sleep(3)
+
+    elif menu_item == '8':
+        common_name()
+        index_text = (working_dir / "prog" / "index.txt").read_text()
+        for line in index_text.splitlines():
+            if cn in line:
+                print(line)
+        time.sleep(3)
+
+    elif menu_item == 'i':
+        common_name()
+        print(f"========> Creating in-line configuration for {cn} in {working_dir}/packages")
+        template_path = working_dir / "packages" / "client.ovpn"
+        out_path = working_dir / "packages" / f"{cn}.ovpn"
+        inline_tag = re.compile(r'^[\t\s]*(cert|ca|key|tls-auth)[\t\s]+')
+
+        with open(template_path) as tf, open(out_path, 'w') as nf:
+            for line in tf:
+                if not inline_tag.match(line):
+                    nf.write(line)
+
+            files_and_tags = [
+                ("ca.crt",     "ca"),
+                (f"{cn}.crt",  "cert"),
+                (f"{cn}.key",  "key"),
+                ("ta.key",     "tls-auth"),
+            ]
+            for fname, tag in files_and_tags:
+                fpath = working_dir / "active" / fname
+                if not fpath.exists():
+                    continue
+                content = fpath.read_text()
+                block = re.search(r'(-----BEGIN.*?-----END[^\n]*-----)', content, re.DOTALL)
+                if block:
+                    nf.write(f"\n<{tag}>\n{block.group(1)}\n</{tag}>")
+
+        print(f"======> Inline configuration available at {out_path}")
+
+    elif menu_item == 'z':
+        common_name()
+        pkg_dir = working_dir / "packages"
+        print(f"=========> Creating .zip file for {cn} in {pkg_dir}")
+        shutil.copy2(str(working_dir / "active" / f"{cn}.crt"), str(pkg_dir / "client.crt"))
+        shutil.copy2(str(working_dir / "active" / f"{cn}.key"), str(pkg_dir / "client.key"))
+
+        extras = "client.ovpn" if yn_prompt(
+            "Is this certificate for an OpenVPN client install? (y/n): ") == 'y' else ""
+        run(f"cd {pkg_dir} && zip {cn}.zip client.crt client.key ca.crt {extras}".rstrip())
+
+        (pkg_dir / "client.crt").unlink(missing_ok=True)
+        (pkg_dir / "client.key").unlink(missing_ok=True)
+        print(f"\nYou may distribute {pkg_dir}/{cn}.zip to the end user.")
+        time.sleep(3)
+
+    elif menu_item == 'dh':
+        gen_dh()
+
+    elif menu_item == 'CA':
+        new_ca()
+
+    elif menu_item == 'S':
+        create_server()
+        sign_server()
+
+    elif menu_item == 'C':
+        print("=========> Generating new CRL")
+        if yn_prompt("We're going to generate a new Certificate Revocation List.  Are you sure? (y/n): ") == 'n':
+            main_menu()
+            return
+        print(f"=========> Generating new Certificate Revocation List {crl}")
+        run(f"cd {working_dir}/active && openssl ca -gencrl -out {crl} -config {key_config}")
+        print("=========> Verifying Revocation: DONE")
+        print(f"=========> CSR for all users is in {working_dir}/csr")
+        time.sleep(3)
+
+    elif menu_item == 'q':
+        sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# First-run install wizard
+# ---------------------------------------------------------------------------
+
+def _ensure_prog_files():
+    prog = working_dir / "prog"
+    if not (prog / "index.txt").exists():
+        (prog / "index.txt").touch()
+    if not (prog / "index.txt.attr").exists():
+        (prog / "index.txt.attr").write_text("unique_subject = no\n")
+    if not (prog / "serial").exists():
+        (prog / "serial").write_text("01\n")
+
+
+def do_install():
+    if not (working_dir / "active").exists():
+        print("This program will walk you through requesting, signing,")
+        print("organizing and revoking SSL certificates.\n")
+        print("Looks like this is a new install, installing...")
+        while True:
+            yn = input(f"You will first need to edit {CONFIG_FILE}\n"
+                       "default variables.  Have you done this? (y/n): ").strip().lower()
+            if yn in ('y', 'n'):
+                break
+        if yn != 'y':
+            sys.exit(f"Please edit {CONFIG_FILE} and run me again.")
+        for d in ("active", "revoked", "csr", "packages", "prog"):
+            (working_dir / d).mkdir(mode=0o750, exist_ok=True)
+
+    if yn_prompt("I need the CA credentials.  Would you like to create a new CA key and\n"
+                 "certificate now?  (y/n): ") == 'y':
+        new_ca()
+        _ensure_prog_files()
+    else:
+        ca_crt = working_dir / "active" / "ca.crt"
+        if not ca_crt.exists():
+            while True:
+                path_str = input("I need your ca.crt file. Please enter path and filename:\nLocation: ").strip()
+                p = Path(path_str)
+                if not p.exists():
+                    print(f"File {path_str} doesn't exist.  Please locate the file and try again.")
+                    continue
+                if "BEGIN CERTIFICATE" not in p.read_text():
+                    print(f"{path_str} doesn't look like a certificate.")
+                    continue
+                shutil.copy2(str(p), str(ca_crt))
+                shutil.copy2(str(p), str(working_dir / "packages" / "ca.crt"))
+                break
+
+        ca_key = working_dir / "active" / "ca.key"
+        if not ca_key.exists():
+            while True:
+                path_str = input("I need your ca.key file. Please enter path and filename:\nLocation: ").strip()
+                p = Path(path_str)
+                if not p.exists():
+                    print(f"File {path_str} doesn't exist.  Please locate the file and try again.")
+                    continue
+                content = p.read_text()
+                if "BEGIN" not in content or "PRIVATE KEY" not in content:
+                    print(f"{path_str} doesn't look like a private key.")
+                    continue
+                shutil.copy2(str(p), str(ca_key))
+                break
+
+        print(f"If you have an existing index.txt or index.txt.attr, place them manually in "
+              f"{working_dir}/prog/")
+        serial = ""
+        while not re.match(r'^[A-Fa-f0-9]+$', serial):
+            serial = input("What serial number shall I start with? [01]: ").strip()
+        (working_dir / "prog" / "serial").write_text(serial + "\n")
+        _ensure_prog_files()
+
+    (working_dir / "prog" / "install").write_text(
+        datetime.datetime.now().strftime("%c") + "\n"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    global working_dir, key_config, crl, key_days, key_size
+
+    if not CONFIG_FILE.exists():
+        sys.exit(f"{CONFIG_FILE} doesn't exist.  Did you copy the sample from {CONFIG_FILE}.default?")
+
+    cfg = load_config(CONFIG_FILE)
+    for k, v in cfg.items():
+        os.environ[k] = v
+
+    working_dir = Path(os.environ.get('KEY_DIR', str(CONFIG_FILE.parent)))
+    os.environ['KEY_DIR'] = str(working_dir)
+    key_config = working_dir / "openssl.conf"
+    crl = working_dir / "prog" / "crl.pem"
+    key_days = os.environ.get('KEY_DAYS', '3650')
+    key_size = os.environ.get('KEY_SIZE', '2048')
+
+    if not working_dir.exists():
+        sys.exit(f"{working_dir} doesn't exist.  Is the variable set correctly?")
+
+    if os.geteuid() != 0:
+        if BUILD == "devel":
+            print("\n\nRunning devel build - this isn't secure!\n")
+        else:
+            sys.exit("Sorry, but I need to be run as the root user.\n")
+
+    if not (working_dir / "prog" / "install").exists():
+        do_install()
+
+    if not crl.exists():
+        print("===> Creating initial CRL.")
+        run(f"cd {working_dir}/active && openssl ca -gencrl -batch -config {key_config} -out {crl}")
+
+    if len(sys.argv) > 1 and sys.argv[1] == 'crl':
+        run(f"cd {working_dir}/active && openssl ca -gencrl -out {crl} -config {key_config} "
+            f"> /dev/null 2>&1")
+        sys.exit(0)
+
+    install_date = (working_dir / "prog" / "install").read_text().strip()
+    print(f"ssl-admin installed {install_date}")
+    update_serial()
+
+    shutil.copy2(str(working_dir / "active" / "ca.crt"), str(working_dir / "packages"))
+    if not (working_dir / "packages" / "client.ovpn").exists():
+        print(f"OPTIONAL: I can't find your OpenVPN client config.  Please copy your config to "
+              f"{working_dir}/packages/client.ovpn")
+
+    while menu_item != 'q':
+        main_menu()
+
+
+if __name__ == '__main__':
+    main()
