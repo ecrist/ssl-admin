@@ -98,7 +98,7 @@ sub project_info {
 		do {
 		print "Key size in bits (up to 4096) [$key_size]: ";
 		chomp($key_size = <>);
-		} until ($key_size =~ m/^$/) or ($key_size =~ m/^[0-9]+$/ and ($key_size lt 4097));
+		} until ($key_size =~ m/^$/) or ($key_size =~ m/^[0-9]+$/ and ($key_size <= 4096));
 		print "######################################################\n";
 		print "####################  CAUTION!!!  ####################\n";
 		print "######################################################\n";
@@ -175,7 +175,7 @@ sub sign_csr {
 	if ($yn eq "y"){
 		`mv $working_dir/$cn.csr $working_dir/csr/`;
 		print "===> $cn.csr moved.\n"
-	} else { print "You will need to move $working_dir/$cn.csr to $working_dir/$cn.csr manually!"; } 
+	} else { print "You will need to move $working_dir/$cn.csr to $working_dir/csr/$cn.csr manually!"; }
 }
 sub new_ca {
 	my $yn;
@@ -298,7 +298,6 @@ sub menu_handler {
 ### CREATE CERT MENU
 
 	} elsif ($menu_item eq "2"){
-		common_name();
 		create_csr();
 
 ### SIGN CERT MENU
@@ -310,7 +309,6 @@ sub menu_handler {
 ### CREATE/SIGN MENU
 
 	} elsif ($menu_item eq "4"){
-		common_name();
 		create_csr();
 		sign_csr();
 
@@ -326,7 +324,7 @@ sub menu_handler {
 		} until $yn =~ m/^[yn]$/;
 		if ($yn eq "n"){ main_menu(); }
 		my $revoke = `openssl x509 -noout -text -in $working_dir/active/$cn.crt | grep Serial`;
-		$revoke =~ m/Serial Number: ([A-F0-9]+)/;
+		$revoke =~ m/Serial Number: ([A-Fa-f0-9]+)/;
 		$revoke = $1 or warn("Certificate doesn't seem valid.");
 		print "\n \$revoke = $revoke\n";
 		`cd $working_dir/active && openssl ca -revoke $working_dir/active/$cn.crt -config $key_config -batch`;
@@ -335,7 +333,7 @@ sub menu_handler {
 		print "=========> Verifying Revokation: ";
 		my $check_revoke = `openssl crl -noout -text -in $crl | grep Serial`;
 		my $check_status = 0;
-		while ($check_revoke =~ m/Serial Number: ([A-F0-9]+)/g){
+		while ($check_revoke =~ m/Serial Number: ([A-Fa-f0-9]+)/g){
 			if (hex $revoke == hex $1){
 				$check_status = 1;
 			}
@@ -348,7 +346,7 @@ sub menu_handler {
 		print "=========> Moving $cn\'s files to $working_dir/revoked\n";
 		my @exts = ('csr', 'pem', 'crt', 'key');
 		foreach (@exts){
-			move("$working_dir/active/$cn.$_", "$working_dir/revoked//$cn.$_") unless (! -e "$working_dir/active/$cn.$_");
+			move("$working_dir/active/$cn.$_", "$working_dir/revoked/$cn.$_") unless (! -e "$working_dir/active/$cn.$_");
 		}
 		print "=========> Destroying previous packages built for $cn: ";
 		unlink "$working_dir/packages/$cn.ovpn", "$working_dir/packages/$cn.zip";
@@ -400,7 +398,7 @@ sub menu_handler {
 
 	} elsif ($menu_item eq "8"){
 		common_name();
-		system("more $working_dir/prog/index.txt | grep $cn");
+		system("grep \Q$cn\E $working_dir/prog/index.txt");
 		sleep 3;
 
 ### Create a config file with inline certifcates and keys.  If the config has
@@ -497,7 +495,6 @@ sub menu_handler {
 		new_ca();
 ### CREATE NEW SIGNED SERVER CERTIFICATE
 	} elsif ($menu_item eq "S"){
-		common_name();
 		create_server();
 		sign_server();
 ### GENERATE CRL MENU
@@ -561,7 +558,7 @@ if ( ! -e "$working_dir/prog/install"){
 	} until $yn =~ m/^[yn]$/;
 	if ($yn eq "y"){
 		new_ca();
-		if ( ! -e "$working_dir/index.txt"){
+		if ( ! -e "$working_dir/prog/index.txt"){
 			open(FILE, ">$working_dir/prog/index.txt");
 			close(FILE);
 			open(FILE, ">$working_dir/prog/index.txt.attr");
@@ -608,7 +605,7 @@ if ( ! -e "$working_dir/prog/install"){
 		print FILE "$serial";
 		close(FILE);
 	}
-	if ( ! -e "$working_dir/index.txt"){
+	if ( ! -e "$working_dir/prog/index.txt"){
 		open(FILE, ">$working_dir/prog/index.txt");
 		close(FILE);
 		open(FILE, ">$working_dir/prog/index.txt.attr");
@@ -628,7 +625,7 @@ if (! -e $crl){
 if ($#ARGV >= 0){
 	if ($ARGV[0] eq "crl"){
 		# generate a CRL and exit
-		`cd $working_dir/active && openssl ca -gencrl -out $crl -config $key_config 2>&1 > /dev/null`;
+		`cd $working_dir/active && openssl ca -gencrl -out $crl -config $key_config > /dev/null 2>&1`;
 		exit 0;
 	}
 }
