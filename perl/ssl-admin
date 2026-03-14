@@ -4,17 +4,17 @@
 #
 # All rights reserved.
 #
-# Redistribution and use in source and binary forms, with or 
-# without modification, are permitted provided that the following 
+# Redistribution and use in source and binary forms, with or
+# without modification, are permitted provided that the following
 # conditions are met:
 #
-# Redistributions of source code must retain the above copyright 
+# Redistributions of source code must retain the above copyright
 # notice, this list of conditions and the following disclaimer.
-# 
-# Redistributions in binary form must reproduce the above copyright 
-# notice, this list of conditions and the following disclaimer in 
+#
+# Redistributions in binary form must reproduce the above copyright
+# notice, this list of conditions and the following disclaimer in
 # the documentation and/or other materials provided with the distribution.
-# 
+#
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 # "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
 # LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -33,6 +33,7 @@ use strict;
 use warnings;
 
 use File::Copy;
+use Getopt::Long qw(:config pass_through);
 
 ## Read config file and die if there's a syntax error.
 my $config_file = "~~~ETCDIR~~~/ssl-admin/ssl-admin.conf";
@@ -63,15 +64,44 @@ my $intermediate = "NO";
 my $key_size = $ENV{'KEY_SIZE'};
 my $serial;
 
-# Gather project information and run-time variables
+### Batch mode state ###
+my $batch_mode = 0;
+my %batch_opts = ();
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 sub update_serial {
 	chomp($curr_serial = `cat $working_dir/prog/serial`);
 }
 
+# yn_prompt_or_default($prompt, $batch_key, $batch_default)
+# In batch mode: return batch_opts{batch_key} if set, else batch_default.
+# In interactive mode: prompt the user for y/n.
+sub yn_prompt_or_default {
+	my ($prompt, $batch_key, $batch_default) = @_;
+	if ($batch_mode) {
+		my $val = $batch_opts{$batch_key};
+		return defined($val) ? $val : $batch_default;
+	}
+	my $yn;
+	do {
+		print $prompt;
+		chomp($yn = <>);
+	} until $yn =~ m/^[yn]$/;
+	return $yn;
+}
+
 sub common_name {
 	my $cn_regex = '^[\w\s\-\.]+$';
 	my $cn_new;
+	if ($batch_mode && $batch_opts{cn}) {
+		$cn_literal = $batch_opts{cn};
+		($cn = $cn_literal) =~ s/\s/_/g;
+		$ENV{'KEY_CN'} = $cn_literal;
+		return;
+	}
 	do {
 		print "Please enter certificate owner's name or ID.\nUsual format is first initial-last name (jdoe) or\n";
 		print "hostname of server which will use this certificate.\nAll lower case, numbers OK.\nOwner [$cn]: ";
@@ -89,6 +119,17 @@ sub project_info {
 	my $key_days_new;
 	my $intermediate_new;
 	if ($new_runtime == 1){
+		if ($batch_mode) {
+			if (defined $batch_opts{days} && $batch_opts{days} ne '') {
+				$key_days = $batch_opts{days};
+				$ENV{'KEY_DAYS'} = $key_days;
+			}
+			if (defined $batch_opts{size} && $batch_opts{size} ne '') {
+				$key_size = $batch_opts{size};
+			}
+			$intermediate = $batch_opts{intermediate} ? "YES" : "NO";
+			return;
+		}
 		print "Number of days key is valid for [$key_days]: ";
 		chomp($key_days_new = <>);
 		if (($key_days_new ne "$ENV{'KEY_DAYS'}") and ($key_days_new ne "")){
@@ -106,39 +147,42 @@ sub project_info {
 		print "\nTurn on Intermediate CA certificate signing? (y/n): ";
 		chomp($intermediate_new = <>);
 		} until $intermediate_new =~ m/^[yn]+$/;
-		if ($intermediate_new eq "y"){ 
-			$intermediate = "YES"; 
+		if ($intermediate_new eq "y"){
+			$intermediate = "YES";
 			print "\nYou have enabled intermediate certificate signing! This means\n";
 			print "any certicates you sign this session will be authorized to sign\n";
 			print "new certificates which will be trusted by you and anyone who\n";
 			print "trusts you.  This option is generally not going to be used.\n";
 		}
-		elsif ($intermediate_new eq "n"){ 
-			$intermediate = "NO"; 
+		elsif ($intermediate_new eq "n"){
+			$intermediate = "NO";
 			print "Intermediate CA certificate signing is disabled.";
 		}
 	}
 }
 
-# Things are kinda crazy, so we're going to functionalize some things.
+# ---------------------------------------------------------------------------
+# Core operations
+# ---------------------------------------------------------------------------
 
 sub create_csr {
 	my $yn = "";
 	common_name();
 	if ( -e "$working_dir/active/$cn.crt"){
 		print "$cn already has a key. Creating another one will overwrite the existing key.\n";
-		do {
-			print "$cn already has an active key.  Do you want to overwrite? (y/n): ";
-			chomp($yn = <>);
-		} until $yn =~ m/^[yn]$/;
+		$yn = yn_prompt_or_default(
+			"$cn already has an active key.  Do you want to overwrite? (y/n): ",
+			'overwrite', 'n');
 		if ($yn eq "n"){
+			if ($batch_mode) {
+				die "Error: certificate for '$cn' already exists. Use --overwrite to replace it.\n";
+			}
 			common_name();
 		}
 	}
-	do {
-		print "Would you like to password protect the private key (y/n): ";
-		chomp($yn = <>);
-	} until $yn =~ m/^[yn]$/;
+	$yn = yn_prompt_or_default(
+		"Would you like to password protect the private key (y/n): ",
+		'password', 'n');
 	if ($yn eq "y") {
 		system("cd $working_dir && openssl req -new -keyout $cn.key -out $cn.csr -config $key_config -batch -extensions v3_req");
 	} elsif ($yn eq "n") {
@@ -163,28 +207,28 @@ sub sign_csr {
 	system("cp $working_dir/$cn.key $working_dir/csr/");
 	system("mv $working_dir/$cn.key $working_dir/active/");
 	system("mv $working_dir/active/$curr_serial.pem $working_dir/active/$cn.pem");
-	my $yn = "";
-	do {
-		print "Can I move signing request ($cn.csr) to the csr directory for archiving? (y/n): ";
-		if ($menu_item != 4){
-			chomp($yn = <>);
-		} else {
-			$yn = 'y';
-		}
-	} until $yn =~ m/^[yn]$/;
+
+	my $yn;
+	if ($menu_item == 4 || $batch_mode) {
+		$yn = 'y';
+	} else {
+		$yn = yn_prompt_or_default(
+			"Can I move signing request ($cn.csr) to the csr directory for archiving? (y/n): ",
+			'archive_csr', 'y');
+	}
 	if ($yn eq "y"){
 		`mv $working_dir/$cn.csr $working_dir/csr/`;
 		print "===> $cn.csr moved.\n"
-	} else { print "You will need to move $working_dir/$cn.csr to $working_dir/csr/$cn.csr manually!"; }
+	} else { print "You will need to move $working_dir/$cn.csr to $working_dir/$cn.csr manually!"; }
 }
+
 sub new_ca {
 	my $yn;
 	common_name();
 	print "\n\n===> Creating private key with $key_size bits and generating request.\n";
-	do {
-		print "Do you want to password protect your CA private key? (y/n): ";
-		chomp($yn = <>);
-	} until $yn =~ m/^[yn]$/;
+	$yn = yn_prompt_or_default(
+		"Do you want to password protect your CA private key? (y/n): ",
+		'password', 'n');
 	if ($yn eq "y") {
 		system("cd $working_dir && openssl genrsa -des3 -out $cn.key $key_size");
 	} else {
@@ -203,47 +247,48 @@ sub create_server {
 	common_name();
 	if ( -e "$working_dir/active/$cn.crt"){
 		print "$cn already has a key.  Creating another one will overwrite the existing key.\n";
-		do {
-			print "$cn already has an active key.  Do you want to overwrite? (y/n): ";
-			chomp($yn = <>);
-		} until $yn =~ m/^[yn]$/;
+		$yn = yn_prompt_or_default(
+			"$cn already has an active key.  Do you want to overwrite? (y/n): ",
+			'overwrite', 'n');
 		if ($yn eq "n") {
+			if ($batch_mode) {
+				die "Error: certificate for '$cn' already exists. Use --overwrite to replace it.\n";
+			}
 			$cn_o = 1;
 			project_info();
 		}
 	}
-	do {
-		print "Would you like to password protect the private key (y/n): ";
-		chomp($yn = <>);
-	} until $yn =~ m/^[yn]$/;
+	$yn = yn_prompt_or_default(
+		"Would you like to password protect the private key (y/n): ",
+		'password', 'n');
 	if ($yn eq "y") {
 		system("cd $working_dir && openssl req -extensions server -new -keyout $cn.key -out $cn.csr -config $key_config -batch");
 	} elsif ($yn eq "n"){
 		system("cd $working_dir && openssl req -extensions server -nodes -new -keyout $cn.key -out $cn.csr -config $key_config -batch");
 	}
 }
+
 sub sign_server {
 	update_serial();
 	print "===> Serial Number = $curr_serial\n";
-		`cd $working_dir && openssl ca -config $key_config -extensions server -days $key_days -out $cn.crt -in $cn.csr -batch`;
+	`cd $working_dir && openssl ca -config $key_config -extensions server -days $key_days -out $cn.crt -in $cn.csr -batch`;
 	if ($? != 0){ die "There was an error during openssl execution.  Please look for error messages above."; }
 	print "=========> Moving certificates and keys to $working_dir/active for production.\n";
 	system("mv $working_dir/$cn.crt $working_dir/active/");
 	system("cp $working_dir/$cn.key $working_dir/csr/");
 	system("mv $working_dir/$cn.key $working_dir/active/");
 	system("mv $working_dir/active/$curr_serial.pem $working_dir/active/$cn.pem");
-	my $yn = "";
-	do {
-		print "Can I move signing request ($cn.csr) to the csr directory for archiving? (y/n): ";
-		chomp($yn = <>);
-	} until $yn =~ m/^[yn]$/;
+
+	my $yn = yn_prompt_or_default(
+		"Can I move signing request ($cn.csr) to the csr directory for archiving? (y/n): ",
+		'archive_csr', 'y');
 	if ($yn eq "y"){
 		`mv $working_dir/$cn.csr $working_dir/csr/`;
 		print "===> $cn.csr moved.\n"
-	} else { print "You will need to move $working_dir/$cn.csr to $working_dir/$cn.csr manually!\n"; 
+	} else { print "You will need to move $working_dir/$cn.csr to $working_dir/$cn.csr manually!\n";
 			 print "Remember that if you do not keep your server .csr you will need to build a new CA\n";
 			 print "if your server cert gets comprimised.\n";
-	} 
+	}
 }
 
 sub gen_dh {
@@ -253,7 +298,9 @@ sub gen_dh {
 	print "Your Diffie Hellman parameters have been created.";
 }
 
-# System Menu
+# ---------------------------------------------------------------------------
+# Menu
+# ---------------------------------------------------------------------------
 
 sub main_menu {
 	update_serial();
@@ -273,7 +320,7 @@ sub main_menu {
 	print "6) Renew/Re-sign a past Certificate Request\n";
 	print "7) View current Certificate Revokation List\n";
 	print "8) View index information for certificate.\n";
-	print "i) Generate a user config with in-line certifcates and keys.\n"; 
+	print "i) Generate a user config with in-line certifcates and keys.\n";
 	print "z) Zip files for end user.\n";
 	print "dh) Generate Diffie Hellman parameters.\n";
 	print "CA) Create new Self-Signed CA certificate.\n";
@@ -285,7 +332,9 @@ sub main_menu {
 	menu_handler();
 }
 
-# Menu Handler
+# ---------------------------------------------------------------------------
+# Menu handler
+# ---------------------------------------------------------------------------
 
 sub menu_handler {
 	if ($menu_item eq "1"){
@@ -293,7 +342,7 @@ sub menu_handler {
 		project_info();
 		print "Run-time options reconfigured.\n\n\n";
 		$new_runtime = 0;
-		main_menu();
+		main_menu() unless $batch_mode;
 
 ### CREATE CERT MENU
 
@@ -316,15 +365,17 @@ sub menu_handler {
 
 	} elsif ($menu_item eq "5"){
 		common_name();
-		my $yn = "";
+		my $yn;
 		print "=========> Revoking Certificate for $cn\n";
-		do {
-			print "We're going to REVOKE an SSL certificate.  Are you sure? (y/n): ";
-			chomp($yn = <>);
-		} until $yn =~ m/^[yn]$/;
-		if ($yn eq "n"){ main_menu(); }
+		$yn = yn_prompt_or_default(
+			"We're going to REVOKE an SSL certificate.  Are you sure? (y/n): ",
+			'yes', 'y');
+		if ($yn eq "n"){
+			main_menu() unless $batch_mode;
+			return;
+		}
 		my $revoke = `openssl x509 -noout -text -in $working_dir/active/$cn.crt | grep Serial`;
-		$revoke =~ m/Serial Number: ([A-Fa-f0-9]+)/;
+		$revoke =~ m/Serial Number:\s*([A-Fa-f0-9]+)/;
 		$revoke = $1 or warn("Certificate doesn't seem valid.");
 		print "\n \$revoke = $revoke\n";
 		`cd $working_dir/active && openssl ca -revoke $working_dir/active/$cn.crt -config $key_config -batch`;
@@ -333,7 +384,7 @@ sub menu_handler {
 		print "=========> Verifying Revokation: ";
 		my $check_revoke = `openssl crl -noout -text -in $crl | grep Serial`;
 		my $check_status = 0;
-		while ($check_revoke =~ m/Serial Number: ([A-Fa-f0-9]+)/g){
+		while ($check_revoke =~ m/Serial Number:\s*([A-Fa-f0-9]+)/g){
 			if (hex $revoke == hex $1){
 				$check_status = 1;
 			}
@@ -352,9 +403,9 @@ sub menu_handler {
 		unlink "$working_dir/packages/$cn.ovpn", "$working_dir/packages/$cn.zip";
 		print "DONE\n";
 		print "=========> CSR for all users is in $working_dir/csr\n";
-		print "===============> Changing file name for $cn\'s request to *.revoked";
-		move("$working_dir/csr/$cn.csr", "$working_dir/csr/$cn.csr.revoked");
-		sleep 3;
+		print "===============> Changing file name for $cn\'s request to *.revoked\n";
+		move("$working_dir/csr/$cn.csr", "$working_dir/csr/$cn.csr.revoked") if -e "$working_dir/csr/$cn.csr";
+		sleep 3 unless $batch_mode;
 
 ### RE-SIGN/RENEW MENU
 
@@ -363,35 +414,35 @@ sub menu_handler {
 		common_name();
 		my $yn;
 		if ( -e "$working_dir/csr/$cn.csr"){
-			print "======> Moving archived request to working directory.";
+			print "======> Moving archived request to working directory.\n";
 			system("mv $working_dir/csr/$cn.csr $working_dir");
-			system("mv $working_dir/csr/$cn.key $working_dir");
+			system("mv $working_dir/csr/$cn.key $working_dir") if -e "$working_dir/csr/$cn.key";
 			sign_csr();
 		} elsif ( -e "$working_dir/csr/$cn.csr.revoked"){
 			print "\n\nThe certificate you're trying to renew has been revoked!\n";
-			do {
-				print "Are you sure you want to re-sign/renew this certficate? (y/n): ";
-				chomp($yn = <>);
-			} until $yn =~ m/^[yn]$/;
-			if ($yn eq "n") { main_menu(); }
-			else {
-				system("mv $working_dir/csr/$cn.csr.revoked $working_dir/$cn.csr");
-				system("mv $working_dir/csr/$cn.key $working_dir/$cn.key");
-				sign_csr();
+			$yn = yn_prompt_or_default(
+				"Are you sure you want to re-sign/renew this certficate? (y/n): ",
+				'yes', 'y');
+			if ($yn eq "n") {
+				main_menu() unless $batch_mode;
+				return;
 			}
-		} else { 
-			print "There is no request in the archive for $cn.\n"; 
+			system("mv $working_dir/csr/$cn.csr.revoked $working_dir/$cn.csr");
+			system("mv $working_dir/csr/$cn.key $working_dir/$cn.key") if -e "$working_dir/csr/$cn.key";
+			sign_csr();
+		} else {
+			print "There is no request in the archive for $cn.\n";
 		}
-		sleep 2; 
+		sleep 2 unless $batch_mode;
 
 ### View Current CRL MENU
 
 	} elsif ($menu_item eq "7"){
-		if (! -e $crl){ 
+		if (! -e $crl){
 			system("cd $working_dir/active && openssl ca -gencrl -config $key_config -out $crl -batch");
 		}
 		system("openssl crl -text -noout -in $crl");
-		sleep 3;
+		sleep 3 unless $batch_mode;
 
 
 ### Read INDEX Menu
@@ -399,14 +450,11 @@ sub menu_handler {
 	} elsif ($menu_item eq "8"){
 		common_name();
 		system("grep \Q$cn\E $working_dir/prog/index.txt");
-		sleep 3;
+		sleep 3 unless $batch_mode;
 
-### Create a config file with inline certifcates and keys.  If the config has
-### options for the inline files, remove them
+### Create a config file with inline certifcates and keys.
 
 	} elsif ($menu_item eq "i"){
-		
-		my $yn;
 		common_name();
 		print "========> Creating in-line configuration for $cn in $working_dir/packages\n";
 		open TEMPLATECONF, "<", "$working_dir/packages/client.ovpn" or die $!;
@@ -462,20 +510,18 @@ sub menu_handler {
 ### Create ZIP FILE Menu
 
 	} elsif ($menu_item eq "z"){
-		my $yn;
 		common_name();
 		print "=========> Creating .zip file for $cn in $working_dir/packages\n";
 		print "=================> Moving $cn.crt\n";
 		`cp $working_dir/active/$cn.crt $working_dir/packages/client.crt`;
 		print "=================> Moving $cn.key\n";
 		`cp $working_dir/active/$cn.key $working_dir/packages/client.key`;
-		do {
-			print "Is this certificate for an OpenVPN client install? (y/n): ";
-			chomp($yn = <>);
-		} until $yn =~ m/^[yn]$/;
-		if ($yn eq "n"){ 
+		my $yn = yn_prompt_or_default(
+			"Is this certificate for an OpenVPN client install? (y/n): ",
+			'openvpn', 'n');
+		if ($yn eq "n"){
 			$zip_cmd = "cd $working_dir/packages/ && zip $cn.zip client.crt client.key ca.crt";
-		} else { 
+		} else {
 			$zip_cmd = "cd $working_dir/packages/ && zip $cn.zip client.crt client.key ca.crt client.ovpn";
 		}
 		print "=================> Zipping File\n";
@@ -486,40 +532,47 @@ sub menu_handler {
 		`rm $working_dir/packages/client.key`;
 		print "client.key.\n";
 		print "\nYou may distribute $working_dir/packages/$cn.zip to the end user.\n";
-		sleep 3;
+		sleep 3 unless $batch_mode;
 
 	} elsif ($menu_item eq "dh"){
 		gen_dh();
+
 ### CREATE NEW SELF-SIGNED CA CERTIFICATE
 	} elsif ($menu_item eq "CA"){
 		new_ca();
+
 ### CREATE NEW SIGNED SERVER CERTIFICATE
 	} elsif ($menu_item eq "S"){
 		create_server();
 		sign_server();
+
 ### GENERATE CRL MENU
 
 	} elsif ($menu_item eq "C"){
-		my $yn = "";
 		print "=========> Generating new CRL\n";
-		do {
-			print "We're going to generate a new Certificate Revocation List.  Are you sure? (y/n): ";
-			chomp($yn = <>);
-		} until $yn =~ m/^[yn]$/;
-		if ($yn eq "n"){ main_menu(); }
+		my $yn = yn_prompt_or_default(
+			"We're going to generate a new Certificate Revocation List.  Are you sure? (y/n): ",
+			'yes', 'y');
+		if ($yn eq "n"){
+			main_menu() unless $batch_mode;
+			return;
+		}
 		print "=========> Generating new Certificate Revokation List $crl\n";
 		`cd $working_dir/active && openssl ca -gencrl -out $crl -config $key_config`;
 		print "=========> Verifying Revokation: ";
 		print "DONE\n";
 		print "=========> CSR for all users is in $working_dir/csr\n";
-		sleep 3;
+		sleep 3 unless $batch_mode;
 
 	} elsif ($menu_item eq "q"){
 		exit 0;
 	}
 }
-# Software header/introduction
-#
+
+# ---------------------------------------------------------------------------
+# Startup / first-run checks
+# ---------------------------------------------------------------------------
+
 if ( ! -e "$working_dir"){
 	print "$working_dir doesn't exist.  Is the variable set correctly?\n";
 	exit 1;
@@ -531,6 +584,97 @@ if ($> != 0){
 		die "Sorry, but I need to be run as the root user.\n\n";
 	}
 }
+
+# ---------------------------------------------------------------------------
+# Batch mode: parse arguments
+# ---------------------------------------------------------------------------
+
+if (@ARGV) {
+	# Extract the command (first non-option argument)
+	my $command = '';
+	for my $i (0 .. $#ARGV) {
+		unless ($ARGV[$i] =~ /^-/) {
+			$command = splice(@ARGV, $i, 1);
+			last;
+		}
+	}
+
+	GetOptions(
+		'cn=s'           => \$batch_opts{cn},
+		'password'       => sub { $batch_opts{password} = 'y' },
+		'no-password'    => sub { $batch_opts{password} = 'n' },
+		'overwrite'      => sub { $batch_opts{overwrite} = 'y' },
+		'archive-csr'    => sub { $batch_opts{archive_csr} = 'y' },
+		'no-archive-csr' => sub { $batch_opts{archive_csr} = 'n' },
+		'openvpn'        => sub { $batch_opts{openvpn} = 'y' },
+		'no-openvpn'     => sub { $batch_opts{openvpn} = 'n' },
+		'yes'            => sub { $batch_opts{yes} = 'y' },
+		'days=s'         => \$batch_opts{days},
+		'size=s'         => \$batch_opts{size},
+		'intermediate'   => sub { $batch_opts{intermediate} = 1 },
+	) or die "Invalid options. Run without arguments for interactive help.\n";
+
+	if ($command eq 'crl') {
+		# Legacy alias: regenerate CRL silently
+		if ( ! -e "$working_dir/prog/install"){
+			die "ssl-admin is not initialized. Run interactively first to complete setup.\n";
+		}
+		`cd $working_dir/active && openssl ca -gencrl -out $crl -config $key_config 2>&1 > /dev/null`;
+		exit 0;
+	}
+
+	if ($command ne '') {
+		$batch_mode = 1;
+
+		if ( ! -e "$working_dir/prog/install"){
+			die "ssl-admin is not initialized. Run interactively first to complete setup.\n";
+		}
+
+		# Apply runtime overrides from flags
+		if (defined $batch_opts{days} && $batch_opts{days} ne '') {
+			$key_days = $batch_opts{days};
+			$ENV{'KEY_DAYS'} = $key_days;
+		}
+		if (defined $batch_opts{size} && $batch_opts{size} ne '') {
+			$key_size = $batch_opts{size};
+		}
+
+		# Ensure CRL exists
+		unless (-e $crl) {
+			system("cd $working_dir/active && openssl ca -gencrl -batch -config $key_config -out $crl 2>/dev/null");
+		}
+
+		my %cmd_to_menu = (
+			'options'     => '1',
+			'create-csr'  => '2',
+			'sign'        => '3',
+			'create-sign' => '4',
+			'revoke'      => '5',
+			'renew'       => '6',
+			'view-crl'    => '7',
+			'index'       => '8',
+			'inline'      => 'i',
+			'zip'         => 'z',
+			'dh'          => 'dh',
+			'new-ca'      => 'CA',
+			'server'      => 'S',
+			'gen-crl'     => 'C',
+		);
+
+		die "Unknown command: $command\nAvailable commands: " .
+		    join(', ', sort keys %cmd_to_menu) . ", crl\n"
+		    unless exists $cmd_to_menu{$command};
+
+		$menu_item = $cmd_to_menu{$command};
+		$new_runtime = 1 if $menu_item eq '1';
+		menu_handler();
+		exit 0;
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Interactive mode: first-run wizard
+# ---------------------------------------------------------------------------
 
 if ( ! -e "$working_dir/prog/install"){
 
@@ -570,7 +714,7 @@ if ( ! -e "$working_dir/prog/install"){
 		}
 	}
 	else {
-		if ( ! -e "$working_dir/active/ca.crt"){ 
+		if ( ! -e "$working_dir/active/ca.crt"){
 			my $ca_cert;
 			print "I need your ca.crt file. Please enter path and filename so I can have a copy: \n";
 			print "Location: ";
@@ -617,17 +761,10 @@ if ( ! -e "$working_dir/prog/install"){
 	}
 	system("echo `date` > $working_dir/prog/install");
 }
+
 if (! -e $crl){
 	print "===> Creating initial CRL.";
 	system("cd $working_dir/active && openssl ca -gencrl -batch -config $key_config -out $crl");
-}
-
-if ($#ARGV >= 0){
-	if ($ARGV[0] eq "crl"){
-		# generate a CRL and exit
-		`cd $working_dir/active && openssl ca -gencrl -out $crl -config $key_config > /dev/null 2>&1`;
-		exit 0;
-	}
 }
 
 my $install_date = `cat $working_dir/prog/install`;
