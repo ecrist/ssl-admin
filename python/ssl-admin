@@ -29,6 +29,7 @@
 #
 # VERSION: ~~~VERSION~~~
 
+import argparse
 import os
 import re
 import sys
@@ -76,6 +77,8 @@ intermediate: str = "NO"
 new_runtime: int = 0
 menu_item: str = ""
 curr_serial: str = ""
+batch_mode: bool = False
+batch_opts: dict = {}
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +100,17 @@ def yn_prompt(prompt: str) -> str:
             return answer
 
 
+def yn_prompt_or_default(prompt: str, batch_key: str, batch_default: str) -> str:
+    """In batch mode return batch_opts[batch_key] if set, else batch_default.
+    In interactive mode prompt the user."""
+    if batch_mode:
+        val = batch_opts.get(batch_key)
+        if val is not None:
+            return val
+        return batch_default
+    return yn_prompt(prompt)
+
+
 def update_serial():
     global curr_serial
     curr_serial = (working_dir / "prog" / "serial").read_text().strip()
@@ -108,6 +122,11 @@ def update_serial():
 
 def common_name():
     global cn, cn_literal
+    if batch_mode and batch_opts.get('cn'):
+        cn_literal = batch_opts['cn']
+        cn = cn_literal.replace(' ', '_')
+        os.environ['KEY_CN'] = cn_literal
+        return
     cn_regex = re.compile(r'^[\w\s\-\.]+$')
     while True:
         print("Please enter certificate owner's name or ID.")
@@ -127,6 +146,15 @@ def common_name():
 def project_info():
     global key_days, key_size, intermediate
     if new_runtime != 1:
+        return
+
+    if batch_mode:
+        if batch_opts.get('days'):
+            key_days = batch_opts['days']
+            os.environ['KEY_DAYS'] = key_days
+        if batch_opts.get('size'):
+            key_size = batch_opts['size']
+        intermediate = "YES" if batch_opts.get('intermediate') else "NO"
         return
 
     key_days_new = input(f"Number of days key is valid for [{key_days}]: ").strip()
@@ -161,10 +189,16 @@ def create_csr():
     common_name()
     if (working_dir / "active" / f"{cn}.crt").exists():
         print(f"{cn} already has a key. Creating another one will overwrite the existing key.")
-        if yn_prompt(f"{cn} already has an active key.  Do you want to overwrite? (y/n): ") == 'n':
+        if yn_prompt_or_default(
+                f"{cn} already has an active key.  Do you want to overwrite? (y/n): ",
+                'overwrite', 'n') == 'n':
+            if batch_mode:
+                sys.exit(f"Error: certificate for '{cn}' already exists. Use --overwrite to replace it.")
             common_name()
 
-    nodes = "" if yn_prompt("Would you like to password protect the private key (y/n): ") == 'y' else "-nodes "
+    nodes = "" if yn_prompt_or_default(
+        "Would you like to password protect the private key (y/n): ",
+        'password', 'n') == 'y' else "-nodes "
     run(f"cd {working_dir} && openssl req {nodes}-new -keyout {cn}.key -out {cn}.csr "
         f"-config {key_config} -batch -extensions v3_req")
 
@@ -193,8 +227,10 @@ def sign_csr():
     shutil.move(str(working_dir / "active" / f"{curr_serial}.pem"),
                 str(working_dir / "active" / f"{cn}.pem"))
 
-    yn = 'y' if menu_item == '4' else yn_prompt(
-        f"Can I move signing request ({cn}.csr) to the csr directory for archiving? (y/n): ")
+    # Auto-archive CSR when called from create-sign (menu '4') or any batch command
+    yn = 'y' if (menu_item == '4' or batch_mode) else yn_prompt_or_default(
+        f"Can I move signing request ({cn}.csr) to the csr directory for archiving? (y/n): ",
+        'archive_csr', 'y')
     if yn == 'y':
         shutil.move(str(working_dir / f"{cn}.csr"), str(working_dir / "csr"))
         print(f"===> {cn}.csr moved.")
@@ -206,7 +242,9 @@ def new_ca():
     common_name()
     print(f"\n\n===> Creating private key with {key_size} bits and generating request.")
 
-    des3 = "-des3 " if yn_prompt("Do you want to password protect your CA private key? (y/n): ") == 'y' else ""
+    des3 = "-des3 " if yn_prompt_or_default(
+        "Do you want to password protect your CA private key? (y/n): ",
+        'password', 'n') == 'y' else ""
     run(f"cd {working_dir} && openssl genrsa {des3}-out {cn}.key {key_size}")
 
     print("===> Self-Signing request.")
@@ -225,10 +263,16 @@ def create_server():
     common_name()
     if (working_dir / "active" / f"{cn}.crt").exists():
         print(f"{cn} already has a key.  Creating another one will overwrite the existing key.")
-        if yn_prompt(f"{cn} already has an active key.  Do you want to overwrite? (y/n): ") == 'n':
+        if yn_prompt_or_default(
+                f"{cn} already has an active key.  Do you want to overwrite? (y/n): ",
+                'overwrite', 'n') == 'n':
+            if batch_mode:
+                sys.exit(f"Error: certificate for '{cn}' already exists. Use --overwrite to replace it.")
             project_info()
 
-    nodes = "" if yn_prompt("Would you like to password protect the private key (y/n): ") == 'y' else "-nodes "
+    nodes = "" if yn_prompt_or_default(
+        "Would you like to password protect the private key (y/n): ",
+        'password', 'n') == 'y' else "-nodes "
     run(f"cd {working_dir} && openssl req -extensions server {nodes}-new "
         f"-keyout {cn}.key -out {cn}.csr -config {key_config} -batch")
 
@@ -248,7 +292,10 @@ def sign_server():
     shutil.move(str(working_dir / "active" / f"{curr_serial}.pem"),
                 str(working_dir / "active" / f"{cn}.pem"))
 
-    if yn_prompt(f"Can I move signing request ({cn}.csr) to the csr directory for archiving? (y/n): ") == 'y':
+    yn = 'y' if batch_mode else yn_prompt_or_default(
+        f"Can I move signing request ({cn}.csr) to the csr directory for archiving? (y/n): ",
+        'archive_csr', 'y')
+    if yn == 'y':
         shutil.move(str(working_dir / f"{cn}.csr"), str(working_dir / "csr"))
         print(f"===> {cn}.csr moved.")
     else:
@@ -304,7 +351,8 @@ def menu_handler():
         project_info()
         print("Run-time options reconfigured.\n\n")
         new_runtime = 0
-        main_menu()
+        if not batch_mode:
+            main_menu()
 
     elif menu_item == '2':
         create_csr()
@@ -320,8 +368,11 @@ def menu_handler():
     elif menu_item == '5':
         common_name()
         print(f"=========> Revoking Certificate for {cn}")
-        if yn_prompt("We're going to REVOKE an SSL certificate.  Are you sure? (y/n): ") == 'n':
-            main_menu()
+        if yn_prompt_or_default(
+                "We're going to REVOKE an SSL certificate.  Are you sure? (y/n): ",
+                'yes', 'y') == 'n':
+            if not batch_mode:
+                main_menu()
             return
 
         revoke_out = run_out(
@@ -365,7 +416,8 @@ def menu_handler():
         csr_path = working_dir / "csr" / f"{cn}.csr"
         if csr_path.exists():
             shutil.move(str(csr_path), str(csr_path.parent / f"{cn}.csr.revoked"))
-        time.sleep(3)
+        if not batch_mode:
+            time.sleep(3)
 
     elif menu_item == '6':
         common_name()
@@ -381,8 +433,11 @@ def menu_handler():
             sign_csr()
         elif csr_revoked.exists():
             print(f"\n\nThe certificate you're trying to renew has been revoked!")
-            if yn_prompt("Are you sure you want to re-sign/renew this certificate? (y/n): ") == 'n':
-                main_menu()
+            if yn_prompt_or_default(
+                    "Are you sure you want to re-sign/renew this certificate? (y/n): ",
+                    'yes', 'y') == 'n':
+                if not batch_mode:
+                    main_menu()
                 return
             shutil.move(str(csr_revoked), str(working_dir / f"{cn}.csr"))
             if key_path.exists():
@@ -390,13 +445,15 @@ def menu_handler():
             sign_csr()
         else:
             print(f"There is no request in the archive for {cn}.")
-        time.sleep(2)
+        if not batch_mode:
+            time.sleep(2)
 
     elif menu_item == '7':
         if not crl.exists():
             run(f"cd {working_dir}/active && openssl ca -gencrl -config {key_config} -out {crl} -batch")
         run(f"openssl crl -text -noout -in {crl}")
-        time.sleep(3)
+        if not batch_mode:
+            time.sleep(3)
 
     elif menu_item == '8':
         common_name()
@@ -404,7 +461,8 @@ def menu_handler():
         for line in index_text.splitlines():
             if cn in line:
                 print(line)
-        time.sleep(3)
+        if not batch_mode:
+            time.sleep(3)
 
     elif menu_item == 'i':
         common_name()
@@ -442,14 +500,16 @@ def menu_handler():
         shutil.copy2(str(working_dir / "active" / f"{cn}.crt"), str(pkg_dir / "client.crt"))
         shutil.copy2(str(working_dir / "active" / f"{cn}.key"), str(pkg_dir / "client.key"))
 
-        extras = "client.ovpn" if yn_prompt(
-            "Is this certificate for an OpenVPN client install? (y/n): ") == 'y' else ""
+        extras = "client.ovpn" if yn_prompt_or_default(
+            "Is this certificate for an OpenVPN client install? (y/n): ",
+            'openvpn', 'n') == 'y' else ""
         run(f"cd {pkg_dir} && zip {cn}.zip client.crt client.key ca.crt {extras}".rstrip())
 
         (pkg_dir / "client.crt").unlink(missing_ok=True)
         (pkg_dir / "client.key").unlink(missing_ok=True)
         print(f"\nYou may distribute {pkg_dir}/{cn}.zip to the end user.")
-        time.sleep(3)
+        if not batch_mode:
+            time.sleep(3)
 
     elif menu_item == 'dh':
         gen_dh()
@@ -463,14 +523,18 @@ def menu_handler():
 
     elif menu_item == 'C':
         print("=========> Generating new CRL")
-        if yn_prompt("We're going to generate a new Certificate Revocation List.  Are you sure? (y/n): ") == 'n':
-            main_menu()
+        if yn_prompt_or_default(
+                "We're going to generate a new Certificate Revocation List.  Are you sure? (y/n): ",
+                'yes', 'y') == 'n':
+            if not batch_mode:
+                main_menu()
             return
         print(f"=========> Generating new Certificate Revocation List {crl}")
         run(f"cd {working_dir}/active && openssl ca -gencrl -out {crl} -config {key_config}")
         print("=========> Verifying Revocation: DONE")
         print(f"=========> CSR for all users is in {working_dir}/csr")
-        time.sleep(3)
+        if not batch_mode:
+            time.sleep(3)
 
     elif menu_item == 'q':
         sys.exit(0)
@@ -491,6 +555,9 @@ def _ensure_prog_files():
 
 
 def do_install():
+    if batch_mode:
+        sys.exit("Error: ssl-admin is not initialized. Run interactively first to complete setup.")
+
     if not (working_dir / "active").exists():
         print("This program will walk you through requesting, signing,")
         print("organizing and revoking SSL certificates.\n")
@@ -554,11 +621,154 @@ def do_install():
 
 
 # ---------------------------------------------------------------------------
+# Argument parser (batch mode)
+# ---------------------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=PROGRAM_NAME,
+        description="SSL/TLS Certificate Authority manager",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Batch mode runs a single operation non-interactively and exits.\n"
+            "Run without arguments to enter the interactive menu.\n\n"
+            "Common options:\n"
+            "  --cn NAME        Certificate owner / Common Name\n"
+            "  --password       Password-protect the private key (default: no)\n"
+            "  --overwrite      Overwrite an existing certificate (default: error)\n"
+            "  --archive-csr    Archive CSR after signing (default: yes)\n"
+            "  --no-archive-csr Do not archive CSR after signing\n"
+        ),
+    )
+    sub = parser.add_subparsers(dest='command', metavar='COMMAND')
+
+    def add_cn(p):
+        p.add_argument('--cn', metavar='NAME', required=True,
+                       help='Certificate owner common name')
+
+    def add_pw(p):
+        p.add_argument('--password', action='store_const', const='y', default='n',
+                       help='Password-protect the private key')
+
+    def add_ow(p):
+        p.add_argument('--overwrite', action='store_const', const='y', default='n',
+                       help='Overwrite existing certificate without prompting')
+
+    def add_archive(p):
+        g = p.add_mutually_exclusive_group()
+        g.add_argument('--archive-csr', dest='archive_csr',
+                       action='store_const', const='y',
+                       help='Archive CSR after signing (default)')
+        g.add_argument('--no-archive-csr', dest='archive_csr',
+                       action='store_const', const='n',
+                       help='Do not archive CSR after signing')
+
+    # options
+    p = sub.add_parser('options', help='Set runtime options (key days, size, intermediate CA)')
+    p.add_argument('--days', metavar='N', help='Certificate validity in days')
+    p.add_argument('--size', metavar='N', help='RSA key size in bits (max 4096)')
+    p.add_argument('--intermediate', action='store_true', default=False,
+                   help='Enable intermediate CA certificate signing')
+
+    # create-csr
+    p = sub.add_parser('create-csr', help='Create a new certificate signing request')
+    add_cn(p); add_pw(p); add_ow(p)
+
+    # sign
+    p = sub.add_parser('sign', help='Sign an existing certificate signing request')
+    add_cn(p); add_archive(p)
+
+    # create-sign
+    p = sub.add_parser('create-sign', help='One-step: create and sign a certificate')
+    add_cn(p); add_pw(p); add_ow(p)
+
+    # revoke
+    p = sub.add_parser('revoke', help='Revoke a certificate')
+    add_cn(p)
+    p.add_argument('--yes', dest='yes', action='store_const', const='y', default='y',
+                   help='Confirm revocation (implied in batch mode)')
+
+    # renew
+    p = sub.add_parser('renew', help='Renew/re-sign a past certificate request')
+    add_cn(p); add_archive(p)
+    p.add_argument('--yes', dest='yes', action='store_const', const='y', default='y',
+                   help='Confirm re-signing of a revoked certificate')
+
+    # view-crl
+    sub.add_parser('view-crl', help='Display the Certificate Revocation List')
+
+    # index
+    p = sub.add_parser('index', help='Show index entry for a certificate')
+    add_cn(p)
+
+    # inline
+    p = sub.add_parser('inline', help='Generate OpenVPN inline config with embedded certs/keys')
+    add_cn(p)
+
+    # zip
+    p = sub.add_parser('zip', help='Package certificate files as a ZIP for end-user distribution')
+    add_cn(p)
+    g = p.add_mutually_exclusive_group()
+    g.add_argument('--openvpn', dest='openvpn', action='store_const', const='y',
+                   help='Include OpenVPN client config in the ZIP')
+    g.add_argument('--no-openvpn', dest='openvpn', action='store_const', const='n',
+                   help='Do not include OpenVPN client config (default)')
+
+    # dh
+    sub.add_parser('dh', help='Generate Diffie-Hellman parameters')
+
+    # new-ca
+    p = sub.add_parser('new-ca', help='Create a new self-signed CA certificate')
+    add_cn(p); add_pw(p)
+    p.add_argument('--days', metavar='N', help='CA certificate validity in days')
+    p.add_argument('--size', metavar='N', help='CA key size in bits (max 4096)')
+
+    # server
+    p = sub.add_parser('server', help='Create and sign a server certificate')
+    add_cn(p); add_pw(p); add_ow(p); add_archive(p)
+
+    # gen-crl
+    p = sub.add_parser('gen-crl', help='Generate a new Certificate Revocation List')
+    p.add_argument('--yes', dest='yes', action='store_const', const='y', default='y',
+                   help='Confirm CRL generation (implied in batch mode)')
+
+    # crl (backward-compatible alias)
+    sub.add_parser('crl', help='Regenerate CRL silently and exit (legacy alias for gen-crl)')
+
+    return parser
+
+
+# Subcommand to menu_item mapping
+_CMD_TO_MENU = {
+    'options':      '1',
+    'create-csr':   '2',
+    'sign':         '3',
+    'create-sign':  '4',
+    'revoke':       '5',
+    'renew':        '6',
+    'view-crl':     '7',
+    'index':        '8',
+    'inline':       'i',
+    'zip':          'z',
+    'dh':           'dh',
+    'new-ca':       'CA',
+    'server':       'S',
+    'gen-crl':      'C',
+}
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 def main():
     global working_dir, key_config, crl, key_days, key_size
+    global batch_mode, batch_opts, menu_item, new_runtime
+
+    # Allow --help / -h to work without a config file
+    if len(sys.argv) > 1 and ('--help' in sys.argv or '-h' in sys.argv):
+        build_parser().parse_args()
+        sys.exit(0)
 
     if not CONFIG_FILE.exists():
         sys.exit(f"{CONFIG_FILE} doesn't exist.  Did you copy the sample from {CONFIG_FILE}.default?")
@@ -583,17 +793,46 @@ def main():
         else:
             sys.exit("Sorry, but I need to be run as the root user.\n")
 
+    # --- Batch mode: parse subcommand if arguments are present ---
+    if len(sys.argv) > 1:
+        parser = build_parser()
+        args = parser.parse_args()
+        if args.command:
+            batch_mode = True
+            batch_opts = {k: v for k, v in vars(args).items() if k != 'command'}
+
+            # Apply per-command runtime overrides
+            if batch_opts.get('days'):
+                key_days = batch_opts['days']
+                os.environ['KEY_DAYS'] = key_days
+            if batch_opts.get('size'):
+                key_size = batch_opts['size']
+
+            if not (working_dir / "prog" / "install").exists():
+                do_install()  # fast-fails in batch mode
+
+            if not crl.exists():
+                run(f"cd {working_dir}/active && openssl ca -gencrl -batch "
+                    f"-config {key_config} -out {crl} 2>/dev/null")
+
+            if args.command == 'crl':
+                run(f"cd {working_dir}/active && openssl ca -gencrl -out {crl} "
+                    f"-config {key_config} >/dev/null 2>&1")
+                sys.exit(0)
+
+            menu_item = _CMD_TO_MENU[args.command]
+            if args.command == 'options':
+                new_runtime = 1
+            menu_handler()
+            sys.exit(0)
+
+    # --- Interactive mode ---
     if not (working_dir / "prog" / "install").exists():
         do_install()
 
     if not crl.exists():
         print("===> Creating initial CRL.")
         run(f"cd {working_dir}/active && openssl ca -gencrl -batch -config {key_config} -out {crl}")
-
-    if len(sys.argv) > 1 and sys.argv[1] == 'crl':
-        run(f"cd {working_dir}/active && openssl ca -gencrl -out {crl} -config {key_config} "
-            f"> /dev/null 2>&1")
-        sys.exit(0)
 
     install_date = (working_dir / "prog" / "install").read_text().strip()
     print(f"ssl-admin installed {install_date}")
