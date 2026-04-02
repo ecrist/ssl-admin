@@ -11,6 +11,7 @@ An interactive X.509 Certificate Authority (CA) management tool for issuing, rev
 - Package certificates for end-user distribution (ZIP, OpenVPN inline config)
 - Generate Diffie-Hellman parameters
 - Available in both Perl (original) and Python 3 (rewrite with bug fixes) implementations
+- Full batch/non-interactive CLI mode for scripting and automation
 
 ## Requirements
 
@@ -110,7 +111,8 @@ KEY_DIR/
 
 ```sh
 ssl-admin            # Launch interactive menu
-ssl-admin crl        # Non-interactive: regenerate CRL and exit
+ssl-admin crl        # Non-interactive: regenerate CRL and exit (legacy)
+ssl-admin <command> [options]   # Batch mode
 ```
 
 ### Main Menu
@@ -132,6 +134,86 @@ ssl-admin crl        # Non-interactive: regenerate CRL and exit
 | `S` | One-step: create and sign a server certificate |
 | `C` | Regenerate the Certificate Revocation List |
 | `q` | Quit |
+
+## Batch Mode
+
+ssl-admin supports non-interactive operation for use in scripts, cron jobs, and automation pipelines. Pass a subcommand and options directly on the command line; the tool runs that one operation and exits.
+
+```sh
+ssl-admin <command> [options]
+```
+
+The CA must already be initialized (run interactively at least once) before using batch mode.
+
+### Subcommands
+
+| Subcommand | Description |
+|-----------|-------------|
+| `create-csr` | Create a new Certificate Signing Request |
+| `sign` | Sign an existing CSR |
+| `create-sign` | One-step: create and sign a certificate |
+| `revoke` | Revoke a certificate |
+| `renew` | Renew/re-sign a previously issued certificate |
+| `view-crl` | Display the Certificate Revocation List |
+| `index` | Show the index entry for a certificate |
+| `inline` | Generate an OpenVPN inline config |
+| `zip` | Package certificate files into a ZIP |
+| `dh` | Generate Diffie-Hellman parameters |
+| `new-ca` | Create a new self-signed CA certificate |
+| `server` | One-step: create and sign a server certificate |
+| `options` | Set runtime options (days, key size, intermediate CA) |
+| `gen-crl` | Regenerate the Certificate Revocation List |
+| `crl` | Alias for `gen-crl` (legacy compatibility) |
+
+### Common Options
+
+| Option | Applies to | Description |
+|--------|-----------|-------------|
+| `--cn NAME` | most commands | Certificate Common Name (required for cert operations) |
+| `--password` | `create-csr`, `create-sign`, `server`, `new-ca` | Password-protect the private key |
+| `--overwrite` | `create-csr`, `create-sign`, `server` | Overwrite an existing certificate (default: error) |
+| `--archive-csr` / `--no-archive-csr` | `sign`, `create-sign`, `renew`, `server` | Control CSR archiving after signing |
+| `--openvpn` / `--no-openvpn` | `zip` | Include OpenVPN client config in ZIP |
+| `--days N` | `options`, `new-ca` | Certificate validity in days |
+| `--size N` | `options`, `new-ca` | RSA key size in bits (max 4096) |
+| `--intermediate` | `options` | Enable intermediate CA certificate signing |
+
+Run `ssl-admin --help` or `ssl-admin <command> --help` for full option details.
+
+### Examples
+
+```sh
+# Issue a client certificate
+ssl-admin create-sign --cn jdoe
+
+# Issue a server certificate
+ssl-admin server --cn webserver.example.com
+
+# Revoke a certificate and update the CRL
+ssl-admin revoke --cn jdoe
+
+# Renew a certificate
+ssl-admin renew --cn jdoe
+
+# Regenerate the CRL (e.g. from cron)
+ssl-admin gen-crl
+
+# Package a certificate for distribution
+ssl-admin zip --cn jdoe --openvpn
+
+# Overwrite an existing certificate
+ssl-admin create-sign --cn jdoe --overwrite
+
+# Create a CA cert with custom validity and key size
+ssl-admin new-ca --cn "My Root CA" --days 3650 --size 4096
+```
+
+### Cron Example
+
+```cron
+# Regenerate CRL weekly
+0 3 * * 0 /usr/local/bin/ssl-admin gen-crl
+```
 
 ## Running Tests
 
